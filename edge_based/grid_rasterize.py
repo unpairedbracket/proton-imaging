@@ -4,7 +4,22 @@ from numpy import floor, ceil
 
 from numba import jit
 
-def rasterize_grid(x0, y0, dx, dy, pixel_min, pixel_max, background_intensity=None):
+def get_intensity(x0, y0, dx, dy, pixel_zoom, xlim, ylim, background_intensity=None):
+    x0 = x0 * pixel_zoom
+    y0 = y0 * pixel_zoom
+    dx = dx * pixel_zoom
+    dy = dy * pixel_zoom
+
+    if xlim: xlim = tuple(l * pixel_zoom for l in xlim)
+    if ylim: ylim = tuple(l * pixel_zoom for l in ylim)
+
+    edg, ext = rasterize_grid(x0, y0, dx, dy, xlim, ylim, background_intensity)
+
+    I = np.cumsum(edg, axis=0)
+    ext = tuple(l / pixel_zoom for l in ext)
+    return I, ext
+
+def rasterize_grid(x0, y0, dx, dy, xlim=None, ylim=None, background_intensity=None):
     X = x0 + dx
     Y = y0 + dy
 
@@ -17,16 +32,27 @@ def rasterize_grid(x0, y0, dx, dy, pixel_min, pixel_max, background_intensity=No
 
     edges, degenerate_tris = get_edges(X, Y, orig_areas)
 
-    X_min = int(ceil(X.min()) - 1); X_max = int(floor(X.max()) + 1)
-    Y_min = int(ceil(Y.min()) - 1); Y_max = int(floor(Y.max()) + 1)
-    raster = np.zeros((X_max - X_min + 1, Y_max - Y_min))
-    contribution = abs((edges[:,3] - edges[:,1]) * edges[:,4])
-    skipped = contribution < 1e-16
-    
-    if skipped.sum() > 0:
-        print(f'Skipping {skipped.sum()} zero-effect edges')
+    edges = clip_contribution(edges)
 
-    for edge in edges[~skipped, :]:
+    if ylim:
+        Y_min = int(ceil(ylim[0])-1); Y_max = int(floor(ylim[1]) + 1)
+        edges = clip_to_y(edges, ylim)
+    else:
+        Y_min = int(ceil(Y.min()) - 1); Y_max = int(floor(Y.max()) + 1)
+
+    if xlim:
+        X_min = int(ceil(xlim[0])-1); X_max = int(floor(xlim[1]) + 1)
+        pre_edges, edges = clip_to_x(edges, xlim)
+    else:
+        X_min = int(ceil(X.min()) - 1); X_max = int(floor(X.max()) + 1)
+        pre_edges = np.array([])
+
+    raster = np.zeros((X_max - X_min + 1, Y_max - Y_min))
+
+    for edge in pre_edges:
+        fill_starting(raster[0, :], edge, Y_min)
+
+    for edge in edges:
         fill_accumulation(raster, edge, (X_min, Y_min))
 
     for tri in degenerate_tris:
@@ -91,6 +117,94 @@ def get_edges(X, Y, flat_areas):
     all_edges = np.concatenate((x_edges.reshape(-1, 5), y_edges.reshape(-1, 5), internal_edges.reshape(-1, 5)), axis=0)
     return all_edges, internal_edges
 
+def clip_contribution(edges):
+    contribution = (edges[:,3] - edges[:,1]) * edges[:,4]
+    skip = abs(contribution) < 1e-16
+
+    if skip.sum() > 0: print(f'Skipping {skip.sum()} zero-effect edges')
+
+    return edges[~skip]
+
+def flip_edges(edges):
+    edges = edges[:, [2,3,0,1,4]]
+    edges[:, 4] *= -1
+    return edges
+
+def clip_to_x(edges, xlim):
+    to_flip = edges[:, 0] > edges[:, 2]
+    edges[to_flip, :] = flip_edges(edges[to_flip, :])
+    # Can only skip right-hand edges, left-hand need to be handled more carefully
+    skip = edges[:, 0] > xlim[1]
+    if skip.sum() > 0:
+        print(f'Skipping {skip.sum()} edges at right')
+        edges = edges[~skip, :]
+
+    skip_left = edges[:, 2] < xlim[0]
+    # Pre-edge format: y0, y1, weight
+    pre_edges_left = edges[skip_left][:, [1,3,4]]
+    if skip_left.sum() > 0:
+        print(f'Skipping {skip.sum()} edges at left')
+        edges = edges[~skip_left, :]
+
+
+    clip_right = (edges[:,2] > xlim[1])
+    if clip_right.sum() > 0:
+        print(f'Clipping {clip_right.sum()} edges at right')
+        edges[clip_right, 3] = edges[clip_right, 1] + (edges[clip_right, 3] - edges[clip_right, 1]) * (xlim[1] - edges[clip_right, 0]) / (edges[clip_right, 2] - edges[clip_right, 0])
+        edges[clip_right, 2] = xlim[1]
+
+    clip_left = (edges[:,0] < xlim[0])
+    pre_edges_clipped = edges[clip_left][:, [1,3,4]]
+    if clip_left.sum() > 0:
+        print(f'Clipping {clip_left.sum()} edges at left')
+        y_intersect = edges[clip_left, 3] - (edges[clip_left, 3] - edges[clip_left, 1]) * (edges[clip_left, 2] - xlim[0]) / (edges[clip_left, 2] - edges[clip_left, 0])
+        pre_edges_clipped[:, 1] = y_intersect
+        edges[clip_left, 1] = y_intersect
+        edges[clip_left, 0] = xlim[0]
+
+
+    return np.concatenate((pre_edges_left, pre_edges_clipped), axis=0), edges
+
+
+def clip_to_y(edges, ylim):
+    to_flip = edges[:, 1] > edges[:, 3]
+    edges[to_flip, :] = flip_edges(edges[to_flip, :])
+    skip = (edges[:,3] < ylim[0]) | (edges[:,1] > ylim[1])
+    if skip.sum() > 0:
+        print(f'Skipping {skip.sum()} edges out of y lims')
+        edges = edges[~skip, :]
+
+    clip_top = (edges[:,3] > ylim[1])
+    if clip_top.sum() > 0:
+        print(f'Clipping {clip_top.sum()} edges at top')
+        edges[clip_top, 2] = edges[clip_top, 0] + (edges[clip_top, 2] - edges[clip_top, 0]) * (ylim[1] - edges[clip_top, 1]) / (edges[clip_top, 3] - edges[clip_top, 1])
+        edges[clip_top, 3] = ylim[1]
+
+    clip_bot = (edges[:,1] < ylim[0])
+    if clip_bot.sum() > 0:
+        print(f'Clipping {clip_bot.sum()} edges at bottom')
+        edges[clip_bot, 0] = edges[clip_bot, 2] - (edges[clip_bot, 2] - edges[clip_bot, 0]) * (edges[clip_bot, 3] - ylim[0]) / (edges[clip_bot, 3] - edges[clip_bot, 1])
+        edges[clip_bot, 1] = ylim[0]
+
+    return edges
+
+def fill_starting(start_values, pre_edge, Y_min):
+    # Firstly flip the edge if it's 'downwards': exchange p0 <-> p1 and negate its weight
+    y0, y1, dA = pre_edge
+    if y1 < y0:
+        y0, y1 = y1, y0
+        dA *= -1
+
+    all_y = np.arange(floor(y0), ceil(y1)+1)
+
+    all_y[0] = y0; all_y[-1] = y1;
+
+    y_prevs = all_y[:-1]
+    y_nexts = all_y[1:]
+
+    for y_prev, y_next in zip(y_prevs, y_nexts):
+        start_values[int(floor(y_prev) - Y_min)] += (y_next - y_prev) * dA
+
 @jit
 def fill_accumulation(raster, edge, XY_min):
     # Firstly flip the edge if it's 'downwards': exchange p0 <-> p1 and negate its weight
@@ -104,8 +218,6 @@ def fill_accumulation(raster, edge, XY_min):
     all_y = np.arange(floor(y0), ceil(y1)+1)
     all_x = x0 + (all_y - y0) * islope
 
-    #all_x = np.concatenate(([x0], intermediate_x, [x1]))
-    #all_y = np.concatenate(([y0], intermediate_y, [y1]))
     all_x[0] = x0; all_x[-1] = x1;
     all_y[0] = y0; all_y[-1] = y1;
 

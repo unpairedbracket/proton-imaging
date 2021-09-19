@@ -15,6 +15,7 @@ def get_intensity(x0, y0, dx, dy, pixel_zoom, xlim, ylim, background_intensity=N
 
     edg, ext = rasterize_grid(x0, y0, dx, dy, xlim, ylim, background_intensity)
 
+    print('Summing edge values...')
     I = np.cumsum(edg, axis=0)
     ext = tuple(l / pixel_zoom for l in ext)
     return I, ext
@@ -30,18 +31,22 @@ def rasterize_grid(x0, y0, dx, dy, xlim=None, ylim=None, background_intensity=No
         Y_c = (Y[1:, 1:] + Y[1:, :-1] + Y[:-1, 1:] + Y[:-1, :-1]) / 4
         orig_areas *= background_intensity(X_c, Y_c)
 
+    print('Generating Edges...')
     edges, degenerate_tris = get_edges(X, Y, orig_areas)
 
+    print('Clipping for contribution...')
     edges = clip_contribution(edges)
 
     if ylim:
         Y_min = int(ceil(ylim[0])-1); Y_max = int(floor(ylim[1]) + 1)
+        print('Clipping to y bounds...')
         edges = clip_to_y(edges, ylim)
     else:
         Y_min = int(ceil(Y.min()) - 1); Y_max = int(floor(Y.max()) + 1)
 
     if xlim:
         X_min = int(ceil(xlim[0])-1); X_max = int(floor(xlim[1]) + 1)
+        print('Clipping to x bounds...')
         pre_edges, edges = clip_to_x(edges, xlim)
     else:
         X_min = int(ceil(X.min()) - 1); X_max = int(floor(X.max()) + 1)
@@ -49,9 +54,11 @@ def rasterize_grid(x0, y0, dx, dy, xlim=None, ylim=None, background_intensity=No
 
     raster = np.zeros((X_max - X_min + 1, Y_max - Y_min))
 
+    print('Initialising left edge...')
     for edge in pre_edges:
         fill_starting(raster[0, :], edge, Y_min)
 
+    print('Filling accumulation buffer...')
     for edge in edges:
         fill_accumulation(raster, edge, (X_min, Y_min))
 
@@ -188,6 +195,7 @@ def clip_to_y(edges, ylim):
 
     return edges
 
+@jit
 def fill_starting(start_values, pre_edge, Y_min):
     # Firstly flip the edge if it's 'downwards': exchange p0 <-> p1 and negate its weight
     y0, y1, dA = pre_edge

@@ -1,0 +1,18 @@
+[package]
+name = "derefined_render_py"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "derefined_render_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+geometry = { path = "../geometry" }
+pyo3 = "0.18.3"
+amr_quadtree = { path = "../amr_quadtree" }
+grid_rasterize = { path = "../grid_rasterize" }
+numpy = "0.18.0"
+ndarray = "0.15.6"
+ndarray-stats = "0.5.1"

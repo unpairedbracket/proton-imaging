@@ -1,0 +1,3 @@
+[workspace]
+members = ["geometry", "grid_rasterize", "grid_rasterize_py", "amr_quadtree", "derefined_renderer", "derefined_render_py"]
+resolver = "2"
